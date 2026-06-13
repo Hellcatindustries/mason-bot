@@ -14,7 +14,8 @@ ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 ELEVENLABS_API_KEY = os.environ["ELEVENLABS_API_KEY"]
 ELEVENLABS_VOICE_ID = os.environ["ELEVENLABS_VOICE_ID"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]  # for Whisper transcription
-ALLOWED_USER_ID = int(os.environ.get("ALLOWED_USER_ID", "0"))  # your Telegram user ID
+_allowed = os.environ.get("ALLOWED_USER_ID", "").strip()
+ALLOWED_USER_ID = int(_allowed) if _allowed else 0  # your Telegram user ID
 
 MASON_SYSTEM = """You are Mason Drake — Chief Operating Officer of Hellcat Industries, a high-performance consultancy run by Dan. You embody the Hellcat ethos: Built Different. Driven to Win.
 
