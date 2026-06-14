@@ -4,6 +4,7 @@ import tempfile
 import json
 import httpx
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 
@@ -23,7 +24,6 @@ ALLOWED_USER_ID = int(_allowed) if _allowed else 0
 MS_CLIENT_ID = os.environ.get("MS_CLIENT_ID", "")
 MS_TENANT_ID = os.environ.get("MS_TENANT_ID", "")
 MS_CLIENT_SECRET = os.environ.get("MS_CLIENT_SECRET", "")
-# Set this to the Outlook email address to read (e.g. dan@hellcatindustries.com.au)
 MS_USER_EMAIL = os.environ.get("MS_USER_EMAIL", "")
 
 # Tavily web search
@@ -31,6 +31,8 @@ TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 
 # Token storage
 _ms_tokens: dict = {}
+
+SYDNEY_TZ = ZoneInfo("Australia/Sydney")
 
 MASON_SYSTEM = """You are Mason Drake — Chief Operating Officer of Hellcat Industries, a high-performance consultancy run by Dan. You embody the Hellcat ethos: Built Different. Driven to Win.
 Your mission: TO BUILD. TO LEAD. TO WIN. For our people. For our country. For our future.
@@ -87,7 +89,7 @@ async def tavily_news(topic: str, max_results: int = 7) -> dict:
                 "topic": "news",
                 "max_results": max_results,
                 "include_answer": True,
-                "days": 3,
+                "days": 1,
             },
         )
         resp.raise_for_status()
@@ -95,7 +97,6 @@ async def tavily_news(topic: str, max_results: int = 7) -> dict:
 
 # ---------------------------------------------------------------------------
 # Microsoft Graph helpers
-# All OData params embedded in URL directly — httpx must NOT encode the $ sign
 # ---------------------------------------------------------------------------
 
 async def ms_get_token() -> str:
@@ -120,9 +121,8 @@ async def ms_get_token() -> str:
 
 
 async def ms_get_emails(max_emails: int = 10) -> list:
-    """Fetch recent unread emails from Outlook. Uses MS_USER_EMAIL env var."""
     if not MS_USER_EMAIL:
-        raise ValueError("MS_USER_EMAIL environment variable not set. Add your Outlook address in Railway variables.")
+        raise ValueError("MS_USER_EMAIL environment variable not set.")
     token = await ms_get_token()
     headers = {"Authorization": f"Bearer {token}"}
     url = f"https://graph.microsoft.com/v1.0/users/{MS_USER_EMAIL}/messages?$top={max_emails}&$select=subject,from,receivedDateTime,bodyPreview,isRead&$orderby=receivedDateTime desc&$filter=isRead eq false"
@@ -133,9 +133,8 @@ async def ms_get_emails(max_emails: int = 10) -> list:
 
 
 async def ms_get_calendar_events(days_ahead: int = 7) -> list:
-    """Fetch upcoming calendar events. Uses MS_USER_EMAIL env var."""
     if not MS_USER_EMAIL:
-        raise ValueError("MS_USER_EMAIL environment variable not set. Add your Outlook address in Railway variables.")
+        raise ValueError("MS_USER_EMAIL environment variable not set.")
     token = await ms_get_token()
     headers = {"Authorization": f"Bearer {token}"}
     now = datetime.now(timezone.utc)
@@ -150,7 +149,6 @@ async def ms_get_calendar_events(days_ahead: int = 7) -> list:
 
 
 async def ms_create_calendar_event(subject: str, start_dt: str, end_dt: str, description: str = "") -> dict:
-    """Create a calendar event. start_dt and end_dt are ISO8601 strings."""
     if not MS_USER_EMAIL:
         raise ValueError("MS_USER_EMAIL environment variable not set.")
     token = await ms_get_token()
@@ -242,7 +240,6 @@ async def reply_voice(update: Update, text: str):
 
 
 async def reply_smart(update: Update, text: str):
-    """Send text + voice reply."""
     await update.message.reply_text(text)
     try:
         await reply_voice(update, text)
@@ -261,6 +258,61 @@ def is_allowed(update: Update) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Morning news briefing (scheduled 5:30 AM Sydney)
+# ---------------------------------------------------------------------------
+
+async def morning_briefing(context) -> None:
+    if not ALLOWED_USER_ID:
+        logger.warning("Morning briefing: ALLOWED_USER_ID not set, skipping.")
+        return
+    try:
+        logger.info("Running morning news briefing...")
+        # Fetch Australian news
+        au_news = await tavily_news("Australia business economy politics news today", max_results=5)
+        # Fetch world news
+        world_news = await tavily_news("world news headlines today", max_results=5)
+
+        au_answer = au_news.get("answer", "")
+        au_articles = au_news.get("results", [])[:3]
+        au_text = " ".join([f"{a.get('title', '')}: {a.get('content', '')[:150]}" for a in au_articles])
+
+        world_answer = world_news.get("answer", "")
+        world_articles = world_news.get("results", [])[:3]
+        world_text = " ".join([f"{a.get('title', '')}: {a.get('content', '')[:150]}" for a in world_articles])
+
+        now_sydney = datetime.now(SYDNEY_TZ).strftime("%A %d %B, %Y")
+
+        prompt = (
+            f"Good morning Dan. It's {now_sydney}. "
+            f"Deliver a sharp 5:30 AM news briefing in your Mason Drake voice. "
+            f"Cover the key Australian stories first, then the top world headlines. "
+            f"Flag anything that could affect Hellcat Industries or Australian business. "
+            f"Keep it punchy — this is a voice briefing, 6 to 8 sentences max. "
+            f"Australian news: {au_answer} {au_text}. "
+            f"World news: {world_answer} {world_text}."
+        )
+
+        reply = await ask_claude(ALLOWED_USER_ID, prompt)
+
+        # Send text message
+        await context.bot.send_message(chat_id=ALLOWED_USER_ID, text=reply)
+
+        # Send voice message
+        try:
+            audio = await text_to_speech(reply)
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                f.write(audio)
+                f.flush()
+                await context.bot.send_voice(chat_id=ALLOWED_USER_ID, voice=open(f.name, "rb"))
+        except Exception as e:
+            logger.warning(f"Morning briefing TTS failed: {e}")
+
+        logger.info("Morning briefing sent successfully.")
+    except Exception as e:
+        logger.error(f"Morning briefing error: {e}")
+
+
+# ---------------------------------------------------------------------------
 # /start
 # ---------------------------------------------------------------------------
 
@@ -271,7 +323,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
-# /emails — read unread Outlook emails
+# /emails
 # ---------------------------------------------------------------------------
 
 async def cmd_emails(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -293,8 +345,6 @@ async def cmd_emails(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prompt = f"Summarise these emails for Dan in your Mason Drake voice. Be concise and flag anything urgent: {summary_text}"
         reply = await ask_claude(update.effective_user.id, prompt)
         await reply_smart(update, reply)
-
-        # Offer to add to calendar
         keyboard = [
             [InlineKeyboardButton("Add important items to calendar", callback_data="add_email_to_cal")],
             [InlineKeyboardButton("Done", callback_data="dismiss")],
@@ -306,7 +356,7 @@ async def cmd_emails(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
-# /calendar — read upcoming calendar events
+# /calendar
 # ---------------------------------------------------------------------------
 
 async def cmd_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -334,7 +384,7 @@ async def cmd_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
-# /addcal — add a calendar event
+# /addcal
 # ---------------------------------------------------------------------------
 
 async def cmd_addcal(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -355,7 +405,7 @@ async def cmd_addcal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     end_dt = parts[2].strip()
     description = parts[3].strip() if len(parts) > 3 else ""
     try:
-        event = await ms_create_calendar_event(subject, start_dt, end_dt, description)
+        await ms_create_calendar_event(subject, start_dt, end_dt, description)
         await reply_smart(update, f"Done. '{subject}' added to your calendar.")
     except Exception as e:
         logger.error(f"Add calendar error: {e}")
@@ -363,7 +413,7 @@ async def cmd_addcal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
-# /search — Tavily web search
+# /search
 # ---------------------------------------------------------------------------
 
 async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -388,7 +438,7 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
-# /news — news briefing
+# /news
 # ---------------------------------------------------------------------------
 
 async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -452,7 +502,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_text_content(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     lower = text.lower()
-    # Natural language triggers for email/calendar/search
     if any(w in lower for w in ["email", "emails", "inbox", "unread", "messages"]):
         await cmd_emails(update, context)
     elif any(w in lower for w in ["calendar", "schedule", "meetings", "appointments", "agenda"]):
@@ -483,6 +532,15 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    # -- Scheduled morning briefing: 5:30 AM Sydney every day --
+    job_queue = app.job_queue
+    job_queue.run_daily(
+        morning_briefing,
+        time=datetime.now(SYDNEY_TZ).replace(hour=5, minute=30, second=0, microsecond=0).timetz(),
+        name="morning_briefing",
+    )
+
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("emails", cmd_emails))
     app.add_handler(CommandHandler("calendar", cmd_calendar))
