@@ -94,7 +94,8 @@ async def tavily_news(topic: str, max_results: int = 7) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Microsoft Graph helpers
+# Microsoft Graph helpers — NOTE: all OData params embedded in URL directly
+# to avoid httpx percent-encoding the $ sign
 # ---------------------------------------------------------------------------
 
 async def ms_get_token() -> str:
@@ -118,76 +119,57 @@ async def ms_get_token() -> str:
         return _ms_tokens["access_token"]
 
 
-async def get_outlook_emails(max_emails: int = 10) -> list:
+async def ms_get_user_email() -> str:
+    """Get the primary mailbox email for the org."""
     token = await ms_get_token()
     async with httpx.AsyncClient(timeout=30) as client:
-        users_resp = await client.get(
-            "https://graph.microsoft.com/v1.0/users",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"$select": "mail,displayName", "$top": "1"},
-        )
-        users_resp.raise_for_status()
-        users = users_resp.json().get("value", [])
-        if not users:
-            return []
-        user_email = users[0]["mail"]
         resp = await client.get(
-            f"https://graph.microsoft.com/v1.0/users/{user_email}/mailFolders/inbox/messages",
+            "https://graph.microsoft.com/v1.0/users?$select=mail,displayName&$top=1",
             headers={"Authorization": f"Bearer {token}"},
-            params={
-                "$top": str(max_emails),
-                "$select": "subject,from,receivedDateTime,isRead,bodyPreview,importance",
-                "$orderby": "receivedDateTime desc",
-                "$filter": "isRead eq false",
-            },
         )
+        resp.raise_for_status()
+        users = resp.json().get("value", [])
+        if not users:
+            raise ValueError("No users found in directory")
+        return users[0]["mail"]
+
+
+async def get_outlook_emails(max_emails: int = 10) -> list:
+    token = await ms_get_token()
+    user_email = await ms_get_user_email()
+    async with httpx.AsyncClient(timeout=30) as client:
+        url = (
+            f"https://graph.microsoft.com/v1.0/users/{user_email}/mailFolders/inbox/messages"
+            f"?$top={max_emails}&$select=subject,from,receivedDateTime,isRead,bodyPreview,importance"
+            f"&$orderby=receivedDateTime desc&$filter=isRead eq false"
+        )
+        resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
         resp.raise_for_status()
         return resp.json().get("value", [])
 
 
 async def get_calendar_events(days_ahead: int = 7) -> list:
     token = await ms_get_token()
+    user_email = await ms_get_user_email()
     now = datetime.now(timezone.utc)
     end = now + timedelta(days=days_ahead)
+    start_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_str = end.strftime("%Y-%m-%dT%H:%M:%SZ")
     async with httpx.AsyncClient(timeout=30) as client:
-        users_resp = await client.get(
-            "https://graph.microsoft.com/v1.0/users",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"$select": "mail", "$top": "1"},
+        url = (
+            f"https://graph.microsoft.com/v1.0/users/{user_email}/calendarView"
+            f"?startDateTime={start_str}&endDateTime={end_str}"
+            f"&$select=subject,start,end,location,organizer&$orderby=start/dateTime&$top=20"
         )
-        users_resp.raise_for_status()
-        users = users_resp.json().get("value", [])
-        if not users:
-            return []
-        user_email = users[0]["mail"]
-        resp = await client.get(
-            f"https://graph.microsoft.com/v1.0/users/{user_email}/calendarView",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "startDateTime": now.isoformat(),
-                "endDateTime": end.isoformat(),
-                "$select": "subject,start,end,location,organizer",
-                "$orderby": "start/dateTime",
-                "$top": "20",
-            },
-        )
+        resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
         resp.raise_for_status()
         return resp.json().get("value", [])
 
 
 async def add_calendar_event(subject: str, start_dt: str, end_dt: str, description: str = "") -> dict:
     token = await ms_get_token()
+    user_email = await ms_get_user_email()
     async with httpx.AsyncClient(timeout=30) as client:
-        users_resp = await client.get(
-            "https://graph.microsoft.com/v1.0/users",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"$select": "mail", "$top": "1"},
-        )
-        users_resp.raise_for_status()
-        users = users_resp.json().get("value", [])
-        if not users:
-            return {"error": "No users found"}
-        user_email = users[0]["mail"]
         resp = await client.post(
             f"https://graph.microsoft.com/v1.0/users/{user_email}/events",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
@@ -297,12 +279,14 @@ def detect_news_intent(text: str) -> bool:
 
 def detect_email_intent(text: str) -> bool:
     lower = text.lower()
-    return any(w in lower for w in ["check my email", "my inbox", "unread email", "read my email", "email update", "email briefing", "emails"])
+    return any(w in lower for w in ["check my email", "my inbox", "unread email", "read my email",
+                                     "email update", "email briefing", "emails", "check email"])
 
 
 def detect_calendar_intent(text: str) -> bool:
     lower = text.lower()
-    return any(w in lower for w in ["my calendar", "my schedule", "what's on", "upcoming meetings", "meetings today", "meetings this week", "diary", "agenda"])
+    return any(w in lower for w in ["my calendar", "my schedule", "what's on", "upcoming meetings",
+                                     "meetings today", "meetings this week", "diary", "agenda", "calendar"])
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +449,7 @@ async def cmd_addcal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorised(update):
         return
     if not MS_CLIENT_ID:
-        await update.message.reply_text("Outlook not configured. Add MS env vars to Railway.")
+        await update.message.reply_text("Outlook not configured.")
         return
     if not context.args:
         await update.message.reply_text("Usage: /addcal Title | YYYY-MM-DD HH:MM | duration_mins")
