@@ -23,6 +23,8 @@ ALLOWED_USER_ID = int(_allowed) if _allowed else 0
 MS_CLIENT_ID = os.environ.get("MS_CLIENT_ID", "")
 MS_TENANT_ID = os.environ.get("MS_TENANT_ID", "")
 MS_CLIENT_SECRET = os.environ.get("MS_CLIENT_SECRET", "")
+# Set this to the Outlook email address to read (e.g. dan@hellcatindustries.com.au)
+MS_USER_EMAIL = os.environ.get("MS_USER_EMAIL", "")
 
 # Tavily web search
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
@@ -73,7 +75,6 @@ async def tavily_search(query: str, search_depth: str = "basic", max_results: in
         resp.raise_for_status()
         return resp.json()
 
-
 async def tavily_news(topic: str, max_results: int = 7) -> dict:
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
@@ -92,10 +93,9 @@ async def tavily_news(topic: str, max_results: int = 7) -> dict:
         resp.raise_for_status()
         return resp.json()
 
-
 # ---------------------------------------------------------------------------
-# Microsoft Graph helpers — NOTE: all OData params embedded in URL directly
-# to avoid httpx percent-encoding the $ sign
+# Microsoft Graph helpers
+# All OData params embedded in URL directly — httpx must NOT encode the $ sign
 # ---------------------------------------------------------------------------
 
 async def ms_get_token() -> str:
@@ -119,95 +119,65 @@ async def ms_get_token() -> str:
         return _ms_tokens["access_token"]
 
 
-async def ms_get_user_email() -> str:
-    """Get the primary mailbox email for the org."""
+async def ms_get_emails(max_emails: int = 10) -> list:
+    """Fetch recent unread emails from Outlook. Uses MS_USER_EMAIL env var."""
+    if not MS_USER_EMAIL:
+        raise ValueError("MS_USER_EMAIL environment variable not set. Add your Outlook address in Railway variables.")
     token = await ms_get_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"https://graph.microsoft.com/v1.0/users/{MS_USER_EMAIL}/messages?$top={max_emails}&$select=subject,from,receivedDateTime,bodyPreview,isRead&$orderby=receivedDateTime desc&$filter=isRead eq false"
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(
-            "https://graph.microsoft.com/v1.0/users?$select=mail,displayName&$top=1",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        resp.raise_for_status()
-        users = resp.json().get("value", [])
-        if not users:
-            raise ValueError("No users found in directory")
-        return users[0]["mail"]
-
-
-async def get_outlook_emails(max_emails: int = 10) -> list:
-    token = await ms_get_token()
-    user_email = await ms_get_user_email()
-    async with httpx.AsyncClient(timeout=30) as client:
-        url = (
-            f"https://graph.microsoft.com/v1.0/users/{user_email}/mailFolders/inbox/messages"
-            f"?$top={max_emails}&$select=subject,from,receivedDateTime,isRead,bodyPreview,importance"
-            f"&$orderby=receivedDateTime desc&$filter=isRead eq false"
-        )
-        resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+        resp = await client.get(url, headers=headers)
         resp.raise_for_status()
         return resp.json().get("value", [])
 
 
-async def get_calendar_events(days_ahead: int = 7) -> list:
+async def ms_get_calendar_events(days_ahead: int = 7) -> list:
+    """Fetch upcoming calendar events. Uses MS_USER_EMAIL env var."""
+    if not MS_USER_EMAIL:
+        raise ValueError("MS_USER_EMAIL environment variable not set. Add your Outlook address in Railway variables.")
     token = await ms_get_token()
-    user_email = await ms_get_user_email()
+    headers = {"Authorization": f"Bearer {token}"}
     now = datetime.now(timezone.utc)
     end = now + timedelta(days=days_ahead)
     start_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     end_str = end.strftime("%Y-%m-%dT%H:%M:%SZ")
+    url = f"https://graph.microsoft.com/v1.0/users/{MS_USER_EMAIL}/calendarView?startDateTime={start_str}&endDateTime={end_str}&$top=20&$select=subject,start,end,location,organizer&$orderby=start/dateTime"
     async with httpx.AsyncClient(timeout=30) as client:
-        url = (
-            f"https://graph.microsoft.com/v1.0/users/{user_email}/calendarView"
-            f"?startDateTime={start_str}&endDateTime={end_str}"
-            f"&$select=subject,start,end,location,organizer&$orderby=start/dateTime&$top=20"
-        )
-        resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+        resp = await client.get(url, headers=headers)
         resp.raise_for_status()
         return resp.json().get("value", [])
 
 
-async def add_calendar_event(subject: str, start_dt: str, end_dt: str, description: str = "") -> dict:
+async def ms_create_calendar_event(subject: str, start_dt: str, end_dt: str, description: str = "") -> dict:
+    """Create a calendar event. start_dt and end_dt are ISO8601 strings."""
+    if not MS_USER_EMAIL:
+        raise ValueError("MS_USER_EMAIL environment variable not set.")
     token = await ms_get_token()
-    user_email = await ms_get_user_email()
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    url = f"https://graph.microsoft.com/v1.0/users/{MS_USER_EMAIL}/events"
+    body = {
+        "subject": subject,
+        "body": {"contentType": "text", "content": description},
+        "start": {"dateTime": start_dt, "timeZone": "Australia/Sydney"},
+        "end": {"dateTime": end_dt, "timeZone": "Australia/Sydney"},
+    }
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"https://graph.microsoft.com/v1.0/users/{user_email}/events",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={
-                "subject": subject,
-                "body": {"contentType": "Text", "content": description},
-                "start": {"dateTime": start_dt, "timeZone": "Australia/Brisbane"},
-                "end": {"dateTime": end_dt, "timeZone": "Australia/Brisbane"},
-                "isReminderOn": True,
-                "reminderMinutesBeforeStart": 15,
-            },
-        )
+        resp = await client.post(url, headers=headers, json=body)
         resp.raise_for_status()
         return resp.json()
 
-
 # ---------------------------------------------------------------------------
-# AI + Voice helpers
+# Anthropic Claude
 # ---------------------------------------------------------------------------
 
-async def transcribe_voice(file_bytes: bytes) -> str:
+async def ask_claude(user_id: int, user_msg: str, system_override: str = None) -> str:
+    history = conversations.setdefault(user_id, [])
+    history.append({"role": "user", "content": user_msg})
+    if len(history) > 20:
+        history[:] = history[-20:]
+    system = system_override or MASON_SYSTEM
     async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(
-            "https://api.openai.com/v1/audio/transcriptions",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-            files={"file": ("voice.ogg", file_bytes, "audio/ogg")},
-            data={"model": "whisper-1"},
-        )
-        resp.raise_for_status()
-        return resp.json().get("text", "").strip()
-
-
-async def call_mason(user_id: int, user_message: str) -> str:
-    if user_id not in conversations:
-        conversations[user_id] = []
-    conversations[user_id].append({"role": "user", "content": user_message})
-    history = conversations[user_id][-20:]
-    async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             "https://api.anthropic.com/v1/messages",
             headers={
@@ -216,360 +186,310 @@ async def call_mason(user_id: int, user_message: str) -> str:
                 "content-type": "application/json",
             },
             json={
-                "model": "claude-sonnet-4-5",
-                "max_tokens": 500,
-                "system": MASON_SYSTEM,
+                "model": "claude-opus-4-5",
+                "max_tokens": 1024,
+                "system": system,
                 "messages": history,
             },
         )
         resp.raise_for_status()
-        data = resp.json()
-    reply = " ".join(
-        block["text"] for block in data.get("content", [])
-        if block.get("type") == "text"
-    ).strip()
-    conversations[user_id].append({"role": "assistant", "content": reply})
+        reply = resp.json()["content"][0]["text"]
+    history.append({"role": "assistant", "content": reply})
     return reply
 
 
-async def call_mason_with_context(user_id: int, user_message: str, context_text: str) -> str:
-    enriched = f"{user_message}\n\n[Real-time data retrieved]:\n{context_text}"
-    return await call_mason(user_id, enriched)
+# ---------------------------------------------------------------------------
+# ElevenLabs TTS
+# ---------------------------------------------------------------------------
 
-
-async def text_to_voice(text: str) -> bytes:
-    clean = text.replace("**", "").replace("*", "").replace("#", "").strip()
-    async with httpx.AsyncClient(timeout=30) as client:
+async def text_to_speech(text: str) -> bytes:
+    async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(
             f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}",
             headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
-            json={
-                "text": clean,
-                "model_id": "eleven_turbo_v2_5",
-                "voice_settings": {
-                    "stability": 0.55,
-                    "similarity_boost": 0.80,
-                    "style": 0.25,
-                    "use_speaker_boost": True,
-                },
-            },
+            json={"text": text, "model_id": "eleven_turbo_v2", "voice_settings": {"stability": 0.5, "similarity_boost": 0.8}},
         )
         resp.raise_for_status()
         return resp.content
 
 
 # ---------------------------------------------------------------------------
-# Intent detection
+# OpenAI Whisper STT
 # ---------------------------------------------------------------------------
 
-def detect_search_intent(text: str) -> bool:
-    lower = text.lower()
-    triggers = ["search", "look up", "find out", "what's happening", "latest news",
-                "news on", "news about", "current", "today", "this week", "recent",
-                "update on", "research", "who is", "what happened", "price of",
-                "stock", "market", "weather", "asx", "bitcoin", "crypto"]
-    return any(t in lower for t in triggers)
-
-
-def detect_news_intent(text: str) -> bool:
-    lower = text.lower()
-    triggers = ["news", "headlines", "what's happening", "latest", "today's news", "briefing"]
-    return any(t in lower for t in triggers)
-
-
-def detect_email_intent(text: str) -> bool:
-    lower = text.lower()
-    return any(w in lower for w in ["check my email", "my inbox", "unread email", "read my email",
-                                     "email update", "email briefing", "emails", "check email"])
-
-
-def detect_calendar_intent(text: str) -> bool:
-    lower = text.lower()
-    return any(w in lower for w in ["my calendar", "my schedule", "what's on", "upcoming meetings",
-                                     "meetings today", "meetings this week", "diary", "agenda", "calendar"])
+async def speech_to_text(audio_bytes: bytes, mime: str = "audio/ogg") -> str:
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+            files={"file": ("audio.ogg", audio_bytes, mime)},
+            data={"model": "whisper-1"},
+        )
+        resp.raise_for_status()
+        return resp.json()["text"]
 
 
 # ---------------------------------------------------------------------------
-# Telegram handlers
+# Reply helpers
 # ---------------------------------------------------------------------------
 
-async def is_authorised(update: Update) -> bool:
-    uid = update.effective_user.id if update.effective_user else 0
-    if ALLOWED_USER_ID and uid != ALLOWED_USER_ID:
-        await update.effective_message.reply_text("Blocked.")
-        return False
-    return True
+async def reply_voice(update: Update, text: str):
+    audio = await text_to_speech(text)
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        f.write(audio)
+        f.flush()
+        await update.message.reply_voice(voice=open(f.name, "rb"))
 
 
-async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorised(update):
-        return
-    if not context.args:
-        await update.message.reply_text("Usage: /search <topic>")
-        return
-    query = " ".join(context.args)
-    await update.message.reply_text(f"Searching: {query}...")
+async def reply_smart(update: Update, text: str):
+    """Send text + voice reply."""
+    await update.message.reply_text(text)
     try:
-        data = await tavily_search(query, search_depth="advanced", max_results=5)
-        answer = data.get("answer", "")
-        results = data.get("results", [])
-        ctx = answer + "\n\n" + "\n".join(f"- {r.get('title','')}: {r.get('content','')[:200]}" for r in results[:5])
-        mason_prompt = f"Dan asked you to research: '{query}'. Here's what the web says — give him a sharp, actionable briefing:\n\n{ctx}"
-        reply = await call_mason(update.effective_user.id, mason_prompt)
+        await reply_voice(update, text)
     except Exception as e:
-        await update.message.reply_text(f"Search failed: {e}")
-        return
-    await update.message.reply_text(f"*{query}*\n\n{reply}", parse_mode="Markdown")
-    try:
-        audio = await text_to_voice(reply)
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-            f.write(audio)
-            f.flush()
-            with open(f.name, "rb") as af:
-                await update.message.reply_voice(voice=af)
-    except Exception:
-        pass
+        logger.warning(f"TTS failed: {e}")
 
 
-async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorised(update):
-        return
-    topic = " ".join(context.args) if context.args else "Australia business technology news today"
-    await update.message.reply_text(f"Pulling news: {topic}...")
-    try:
-        data = await tavily_news(topic, max_results=7)
-        answer = data.get("answer", "")
-        results = data.get("results", [])
-        ctx = answer + "\n\n"
-        for r in results[:7]:
-            title = r.get("title", "")
-            content = r.get("content", "")[:200]
-            published = r.get("published_date", "")[:10] if r.get("published_date") else ""
-            ctx += f"- [{published}] {title}: {content}\n"
-        mason_prompt = f"Dan wants a news briefing on: '{topic}'. Here are the latest headlines — give him a punchy executive summary, flag anything that matters for business or strategy:\n\n{ctx}"
-        reply = await call_mason(update.effective_user.id, mason_prompt)
-    except Exception as e:
-        await update.message.reply_text(f"News fetch failed: {e}")
-        return
-    await update.message.reply_text(f"*News: {topic}*\n\n{reply}", parse_mode="Markdown")
-    try:
-        audio = await text_to_voice(reply)
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-            f.write(audio)
-            f.flush()
-            with open(f.name, "rb") as af:
-                await update.message.reply_voice(voice=af)
-    except Exception:
-        pass
+# ---------------------------------------------------------------------------
+# Auth guard
+# ---------------------------------------------------------------------------
 
+def is_allowed(update: Update) -> bool:
+    if not ALLOWED_USER_ID:
+        return True
+    return update.effective_user.id == ALLOWED_USER_ID
+
+
+# ---------------------------------------------------------------------------
+# /start
+# ---------------------------------------------------------------------------
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update):
+        return
+    await reply_smart(update, "Mason Drake online. What do you need?")
+
+
+# ---------------------------------------------------------------------------
+# /emails — read unread Outlook emails
+# ---------------------------------------------------------------------------
 
 async def cmd_emails(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorised(update):
+    if not is_allowed(update):
         return
-    if not MS_CLIENT_ID:
-        await update.message.reply_text("Outlook not configured. Add MS env vars to Railway.")
-        return
-    await update.message.reply_text("Checking your inbox...")
+    await update.message.reply_text("Checking your emails...")
     try:
-        emails = await get_outlook_emails(max_emails=10)
+        emails = await ms_get_emails(10)
+        if not emails:
+            await reply_smart(update, "No unread emails.")
+            return
+        summary_parts = []
+        for e in emails[:5]:
+            sender = e.get("from", {}).get("emailAddress", {}).get("name", "Unknown")
+            subj = e.get("subject", "(no subject)")
+            preview = e.get("bodyPreview", "")[:100]
+            summary_parts.append(f"From {sender}: {subj}. {preview}")
+        summary_text = " | ".join(summary_parts)
+        prompt = f"Summarise these emails for Dan in your Mason Drake voice. Be concise and flag anything urgent: {summary_text}"
+        reply = await ask_claude(update.effective_user.id, prompt)
+        await reply_smart(update, reply)
+
+        # Offer to add to calendar
+        keyboard = [
+            [InlineKeyboardButton("Add important items to calendar", callback_data="add_email_to_cal")],
+            [InlineKeyboardButton("Done", callback_data="dismiss")],
+        ]
+        await update.message.reply_text("Want me to add anything to your calendar?", reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception as e:
+        logger.error(f"Email error: {e}")
         await update.message.reply_text(f"Couldn't fetch emails: {e}")
-        return
-    if not emails:
-        await update.message.reply_text("No unread emails. Inbox clear, boss.")
-        return
-    email_text = ""
-    for i, em in enumerate(emails, 1):
-        sender = em.get("from", {}).get("emailAddress", {}).get("name", "Unknown")
-        subject = em.get("subject", "(no subject)")
-        preview = em.get("bodyPreview", "")[:150]
-        received = em.get("receivedDateTime", "")[:10]
-        importance = em.get("importance", "normal")
-        star = " URGENT" if importance == "high" else ""
-        email_text += f"{i}. From: {sender}{star}. Subject: {subject}. Date: {received}. Preview: {preview}\n\n"
-    mason_prompt = f"Here are Dan's {len(emails)} unread emails. Give a sharp briefing — flag anything urgent, group by theme, tell me what needs action:\n\n{email_text}"
-    summary = await call_mason(update.effective_user.id, mason_prompt)
-    keyboard = []
-    for i, em in enumerate(emails[:5]):
-        subject = em.get("subject", "(no subject)")[:40]
-        keyboard.append([InlineKeyboardButton(f"Add to calendar: {subject}", callback_data=f"cal_{i}")])
-    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-    await update.message.reply_text(f"*Email Briefing*\n\n{summary}", parse_mode="Markdown", reply_markup=reply_markup)
-    try:
-        audio = await text_to_voice(summary)
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-            f.write(audio)
-            f.flush()
-            with open(f.name, "rb") as af:
-                await update.message.reply_voice(voice=af)
-    except Exception:
-        pass
-    context.bot_data["last_emails"] = emails
 
 
-async def cmd_calendar_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorised(update):
+# ---------------------------------------------------------------------------
+# /calendar — read upcoming calendar events
+# ---------------------------------------------------------------------------
+
+async def cmd_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update):
         return
-    if not MS_CLIENT_ID:
-        await update.message.reply_text("Outlook not configured. Add MS env vars to Railway.")
-        return
-    days = int(context.args[0]) if context.args and context.args[0].isdigit() else 7
-    await update.message.reply_text(f"Checking your calendar for the next {days} days...")
+    await update.message.reply_text("Checking your calendar for the next 7 days...")
     try:
-        events = await get_calendar_events(days_ahead=days)
+        events = await ms_get_calendar_events(7)
+        if not events:
+            await reply_smart(update, "Nothing in your calendar for the next 7 days.")
+            return
+        event_parts = []
+        for ev in events[:10]:
+            subj = ev.get("subject", "(no subject)")
+            start = ev.get("start", {}).get("dateTime", "")[:16].replace("T", " ")
+            loc = ev.get("location", {}).get("displayName", "")
+            event_parts.append(f"{subj} at {start}" + (f" ({loc})" if loc else ""))
+        events_text = " | ".join(event_parts)
+        prompt = f"Give Dan a sharp calendar briefing in your Mason Drake voice: {events_text}"
+        reply = await ask_claude(update.effective_user.id, prompt)
+        await reply_smart(update, reply)
     except Exception as e:
+        logger.error(f"Calendar error: {e}")
         await update.message.reply_text(f"Couldn't fetch calendar: {e}")
-        return
-    if not events:
-        await update.message.reply_text("Nothing on the calendar. Schedule's clear.")
-        return
-    cal_text = ""
-    for ev in events:
-        subject = ev.get("subject", "(no title)")
-        start = ev.get("start", {}).get("dateTime", "")[:16].replace("T", " ")
-        end = ev.get("end", {}).get("dateTime", "")[:16].replace("T", " ")
-        location = ev.get("location", {}).get("displayName", "")
-        loc_str = f" @ {location}" if location else ""
-        cal_text += f"- {subject}: {start} to {end}{loc_str}\n"
-    mason_prompt = f"Here's Dan's calendar for the next {days} days. Give him a quick briefing — what's coming up, anything he needs to prep for:\n\n{cal_text}"
-    reply = await call_mason(update.effective_user.id, mason_prompt)
-    await update.message.reply_text(f"*Calendar — Next {days} days*\n\n{reply}", parse_mode="Markdown")
-    try:
-        audio = await text_to_voice(reply)
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-            f.write(audio)
-            f.flush()
-            with open(f.name, "rb") as af:
-                await update.message.reply_voice(voice=af)
-    except Exception:
-        pass
 
+
+# ---------------------------------------------------------------------------
+# /addcal — add a calendar event
+# ---------------------------------------------------------------------------
 
 async def cmd_addcal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorised(update):
+    if not is_allowed(update):
         return
-    if not MS_CLIENT_ID:
-        await update.message.reply_text("Outlook not configured.")
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "Usage: /addcal Meeting with John | 2025-06-20T10:00 | 2025-06-20T11:00 | Description (optional)"
+        )
         return
-    if not context.args:
-        await update.message.reply_text("Usage: /addcal Title | YYYY-MM-DD HH:MM | duration_mins")
+    parts = " ".join(args).split("|")
+    if len(parts) < 3:
+        await update.message.reply_text("Need at least: title | start datetime | end datetime")
         return
-    text = " ".join(context.args)
-    parts = [p.strip() for p in text.split("|")]
-    if len(parts) < 2:
-        await update.message.reply_text("Format: /addcal Title | YYYY-MM-DD HH:MM | duration_minutes")
-        return
-    title = parts[0]
-    dt_str = parts[1]
-    duration = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 60
+    subject = parts[0].strip()
+    start_dt = parts[1].strip()
+    end_dt = parts[2].strip()
+    description = parts[3].strip() if len(parts) > 3 else ""
     try:
-        start = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
-        end = start + timedelta(minutes=duration)
-    except ValueError:
-        await update.message.reply_text("Date format must be YYYY-MM-DD HH:MM")
-        return
-    try:
-        await add_calendar_event(title, start.isoformat(), end.isoformat())
-        await update.message.reply_text(f"Added: *{title}*\nStart: {dt_str} | Duration: {duration} mins", parse_mode="Markdown")
+        event = await ms_create_calendar_event(subject, start_dt, end_dt, description)
+        await reply_smart(update, f"Done. '{subject}' added to your calendar.")
     except Exception as e:
-        await update.message.reply_text(f"Failed to add event: {e}")
+        logger.error(f"Add calendar error: {e}")
+        await update.message.reply_text(f"Couldn't create event: {e}")
 
 
-async def calendar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------------------------------------------------------------------------
+# /search — Tavily web search
+# ---------------------------------------------------------------------------
+
+async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update):
+        return
+    query = " ".join(context.args) if context.args else None
+    if not query:
+        await update.message.reply_text("Usage: /search your query here")
+        return
+    await update.message.reply_text(f"Searching for: {query}...")
+    try:
+        results = await tavily_search(query)
+        answer = results.get("answer", "")
+        sources = results.get("results", [])[:3]
+        source_text = " ".join([f"{s.get('title', '')}: {s.get('content', '')[:150]}" for s in sources])
+        prompt = f"Based on this research, give Dan a sharp answer in your Mason Drake voice. Query: {query}. Research: {answer} {source_text}"
+        reply = await ask_claude(update.effective_user.id, prompt)
+        await reply_smart(update, reply)
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        await update.message.reply_text(f"Search failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# /news — news briefing
+# ---------------------------------------------------------------------------
+
+async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update):
+        return
+    topic = " ".join(context.args) if context.args else "business Australia economy technology"
+    await update.message.reply_text(f"Getting news on: {topic}...")
+    try:
+        results = await tavily_news(topic)
+        answer = results.get("answer", "")
+        articles = results.get("results", [])[:5]
+        article_text = " ".join([f"{a.get('title', '')}: {a.get('content', '')[:200]}" for a in articles])
+        prompt = f"Give Dan a sharp news briefing in your Mason Drake voice. Focus on what matters for a high-performance business leader. Topics: {topic}. News: {answer} {article_text}"
+        reply = await ask_claude(update.effective_user.id, prompt)
+        await reply_smart(update, reply)
+    except Exception as e:
+        logger.error(f"News error: {e}")
+        await update.message.reply_text(f"News fetch failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Inline button callbacks
+# ---------------------------------------------------------------------------
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if not query.data.startswith("cal_"):
-        return
-    idx = int(query.data.split("_")[1])
-    emails = context.bot_data.get("last_emails", [])
-    if idx >= len(emails):
-        await query.edit_message_text("Email not found.")
-        return
-    em = emails[idx]
-    subject = em.get("subject", "Meeting")
-    tomorrow = datetime.now() + timedelta(days=1)
-    start = tomorrow.replace(hour=9, minute=0, second=0, microsecond=0)
-    end = start + timedelta(hours=1)
-    try:
-        await add_calendar_event(subject, start.isoformat(), end.isoformat(), f"From email: {subject}")
-        await query.edit_message_text(f"Added: {subject}\nScheduled: {start.strftime('%Y-%m-%d 09:00')} (1hr)")
-    except Exception as e:
-        await query.edit_message_text(f"Failed: {e}")
+    if query.data == "dismiss":
+        await query.edit_message_text("Got it.")
+    elif query.data == "add_email_to_cal":
+        await query.edit_message_text("Tell me what to add — e.g. /addcal Meeting title | 2025-06-20T10:00 | 2025-06-20T11:00")
 
+
+# ---------------------------------------------------------------------------
+# Voice message handler
+# ---------------------------------------------------------------------------
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorised(update):
+    if not is_allowed(update):
         return
     file = await context.bot.get_file(update.message.voice.file_id)
-    file_bytes = await file.download_as_bytearray()
+    audio_bytes = bytes(await file.download_as_bytearray())
     try:
-        text = await transcribe_voice(bytes(file_bytes))
+        text = await speech_to_text(audio_bytes)
     except Exception as e:
-        await update.message.reply_text(f"Couldn't transcribe: {e}")
+        await update.message.reply_text(f"Couldn't transcribe audio: {e}")
         return
-    if not text:
-        await update.message.reply_text("Couldn't make out what you said.")
-        return
-    await _process_message(update, context, text)
+    await handle_text_content(update, context, text)
 
+
+# ---------------------------------------------------------------------------
+# Text message handler
+# ---------------------------------------------------------------------------
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorised(update):
+    if not is_allowed(update):
         return
-    text = update.message.text.strip()
-    await _process_message(update, context, text)
+    text = update.message.text or ""
+    await handle_text_content(update, context, text)
 
 
-async def _process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-    if detect_email_intent(text):
-        context.args = []
+async def handle_text_content(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    lower = text.lower()
+    # Natural language triggers for email/calendar/search
+    if any(w in lower for w in ["email", "emails", "inbox", "unread", "messages"]):
         await cmd_emails(update, context)
-        return
-    if detect_calendar_intent(text):
+    elif any(w in lower for w in ["calendar", "schedule", "meetings", "appointments", "agenda"]):
+        await cmd_calendar(update, context)
+    elif lower.startswith("search ") or lower.startswith("look up ") or lower.startswith("research "):
+        query = text.split(" ", 1)[1] if " " in text else text
+        context.args = query.split()
+        await cmd_search(update, context)
+    elif any(w in lower for w in ["news", "headlines", "briefing", "what's happening"]):
         context.args = []
-        await cmd_calendar_view(update, context)
-        return
-    if detect_news_intent(text):
-        context.args = text.split()
         await cmd_news(update, context)
-        return
-    if detect_search_intent(text) and TAVILY_API_KEY:
-        try:
-            data = await tavily_search(text, search_depth="basic", max_results=4)
-            answer = data.get("answer", "")
-            results = data.get("results", [])
-            ctx = answer + "\n" + "\n".join(f"- {r.get('title','')}: {r.get('content','')[:150]}" for r in results[:4])
-            reply = await call_mason_with_context(update.effective_user.id, text, ctx)
-        except Exception:
-            reply = await call_mason(update.effective_user.id, text)
     else:
-        reply = await call_mason(update.effective_user.id, text)
-    try:
-        audio = await text_to_voice(reply)
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-            f.write(audio)
-            f.flush()
-            with open(f.name, "rb") as af:
-                await update.message.reply_voice(voice=af)
-    except Exception:
-        await update.message.reply_text(reply)
+        reply = await ask_claude(update.effective_user.id, text)
+        await reply_smart(update, reply)
 
+
+# ---------------------------------------------------------------------------
+# Error handler
+# ---------------------------------------------------------------------------
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logger.error("Exception:", exc_info=context.error)
-    if isinstance(update, Update) and update.effective_message:
-        await update.effective_message.reply_text("Mason's offline briefly — back in a sec.")
+    logger.error(f"Update {update} caused error {context.error}")
 
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
-    logger.info("Mason Drake is online.")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("emails", cmd_emails))
-    app.add_handler(CommandHandler("calendar", cmd_calendar_view))
+    app.add_handler(CommandHandler("calendar", cmd_calendar))
     app.add_handler(CommandHandler("addcal", cmd_addcal))
     app.add_handler(CommandHandler("search", cmd_search))
     app.add_handler(CommandHandler("news", cmd_news))
-    app.add_handler(CallbackQueryHandler(calendar_callback, pattern="^cal_"))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(error_handler)
