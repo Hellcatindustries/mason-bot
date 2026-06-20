@@ -3,7 +3,7 @@ import logging
 import tempfile
 import json
 import httpx
-from datetime import datetime, timedelta, timezohne, time as dt_time
+from datetime import datetime, timedelta, timezone, time as dt_time
 from zoneinfo import ZoneInfo
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
