@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 
-logging.basicConfig(level=logging.INFO)h
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # -- Env vars ----------------------------------------------------------------
