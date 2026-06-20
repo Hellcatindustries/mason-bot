@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO)h
 logger = logging.getLogger(__name__)
 
 # -- Env vars ----------------------------------------------------------------
@@ -260,44 +260,85 @@ def is_allowed(update: Update) -> bool:
 # ---------------------------------------------------------------------------
 # Morning news briefing (scheduled 5:30 AM Sydney)
 # ---------------------------------------------------------------------------
+# Daily Intel — 5:30 AM scheduler
+# ---------------------------------------------------------------------------
 
 async def morning_briefing(context) -> None:
+    """Runs at 5:30 AM Sydney time. Delivers Dan's daily intel brief."""
     if not ALLOWED_USER_ID:
-        logger.warning("Morning briefing: ALLOWED_USER_ID not set, skipping.")
+        logger.warning("Daily intel: ALLOWED_USER_ID not set, skipping.")
         return
     try:
-        logger.info("Running morning news briefing...")
-        # Fetch Australian news
+        logger.info("Running 5:30 AM daily intel brief...")
+        now_sydney = datetime.now(SYDNEY_TZ).strftime("%A %d %B, %Y")
+
+        # --- Fetch intel data in parallel ---
+        # 1. Australian news
         au_news = await tavily_news("Australia business economy politics news today", max_results=5)
-        # Fetch world news
+        # 2. World headlines
         world_news = await tavily_news("world news headlines today", max_results=5)
+        # 3. Tech / AI intel
+        tech_news = await tavily_news("AI technology business innovation news today", max_results=3)
 
         au_answer = au_news.get("answer", "")
         au_articles = au_news.get("results", [])[:3]
-        au_text = " ".join([f"{a.get('title', '')}: {a.get('content', '')[:150]}" for a in au_articles])
+        au_text = " ".join([f"{a.get('title','')}: {a.get('content','')[:150]}" for a in au_articles])
 
         world_answer = world_news.get("answer", "")
         world_articles = world_news.get("results", [])[:3]
-        world_text = " ".join([f"{a.get('title', '')}: {a.get('content', '')[:150]}" for a in world_articles])
+        world_text = " ".join([f"{a.get('title','')}: {a.get('content','')[:150]}" for a in world_articles])
 
-        now_sydney = datetime.now(SYDNEY_TZ).strftime("%A %d %B, %Y")
+        tech_answer = tech_news.get("answer", "")
+        tech_articles = tech_news.get("results", [])[:2]
+        tech_text = " ".join([f"{a.get('title','')}: {a.get('content','')[:150]}" for a in tech_articles])
 
+        # --- Try to pull calendar ---
+        cal_summary = ""
+        try:
+            events = await ms_get_calendar_events(1)
+            if events:
+                cal_parts = []
+                for ev in events[:5]:
+                    subj = ev.get("subject", "No title")
+                    start_raw = ev.get("start", {}).get("dateTime", "")
+                    if start_raw:
+                        try:
+                            dt = datetime.fromisoformat(start_raw.replace("Z", "+00:00")).astimezone(SYDNEY_TZ)
+                            start_fmt = dt.strftime("%I:%M %p")
+                        except Exception:
+                            start_fmt = start_raw[:16]
+                    else:
+                        start_fmt = "All day"
+                    cal_parts.append(f"{start_fmt} — {subj}")
+                cal_summary = "Today's calendar: " + "; ".join(cal_parts) + "."
+            else:
+                cal_summary = "No meetings on the calendar today."
+        except Exception as e:
+            logger.warning(f"Calendar pull failed in daily intel: {e}")
+            cal_summary = ""
+
+        # --- Build the intel prompt (mirrors Dan's own format) ---
         prompt = (
-            f"Good morning Dan. It's {now_sydney}. "
-            f"Deliver a sharp 5:30 AM news briefing in your Mason Drake voice. "
-            f"Cover the key Australian stories first, then the top world headlines. "
-            f"Flag anything that could affect Hellcat Industries or Australian business. "
-            f"Keep it punchy — this is a voice briefing, 6 to 8 sentences max. "
-            f"Australian news: {au_answer} {au_text}. "
-            f"World news: {world_answer} {world_text}."
+            f"Good morning Dan. It's {now_sydney}. Time for your 5:30 AM daily intel. "
+            f"Deliver this in your Mason Drake voice — sharp, structured, spoken. "
+            f"Cover in this exact order: "
+            f"1. SITUATION: Two sentences on what's happening in the world that matters to Hellcat Industries. "
+            f"2. AUSTRALIA: Key Australian business, economic or political developments today. "
+            f"3. TECH & AI: One sharp insight on AI or tech that Dan should know. "
+            f"4. CALENDAR: {cal_summary} Summarise what Dan needs to show up ready for. "
+            f"5. EDGE: One competitive or strategic insight Dan can act on today. "
+            f"Keep it punchy — voice delivery, 90 seconds max. No bullet points. Speak it. "
+            f"AU news data: {au_answer} {au_text}. "
+            f"World data: {world_answer} {world_text}. "
+            f"Tech data: {tech_answer} {tech_text}."
         )
 
         reply = await ask_claude(ALLOWED_USER_ID, prompt)
 
-        # Send text message
+        # Send text
         await context.bot.send_message(chat_id=ALLOWED_USER_ID, text=reply)
 
-        # Send voice message
+        # Send voice
         try:
             audio = await text_to_speech(reply)
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
@@ -305,11 +346,11 @@ async def morning_briefing(context) -> None:
                 f.flush()
                 await context.bot.send_voice(chat_id=ALLOWED_USER_ID, voice=open(f.name, "rb"))
         except Exception as e:
-            logger.warning(f"Morning briefing TTS failed: {e}")
+            logger.warning(f"Daily intel TTS failed: {e}")
 
-        logger.info("Morning briefing sent successfully.")
+        logger.info("Daily intel brief sent successfully.")
     except Exception as e:
-        logger.error(f"Morning briefing error: {e}")
+        logger.error(f"Daily intel error: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +574,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # -- Scheduled morning briefing: 5:30 AM Sydney every day --
+    # -- Scheduled daily intel brief: 5:30 AM Sydney every day --
     job_queue = app.job_queue
     job_queue.run_daily(
         morning_briefing,
