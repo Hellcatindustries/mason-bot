@@ -3,7 +3,7 @@ import logging
 import tempfile
 import json
 import httpx
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezohne, time as dt_time
 from zoneinfo import ZoneInfo
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
@@ -618,7 +618,7 @@ def main():
     job_queue = app.job_queue
     job_queue.run_daily(
         morning_briefing,
-        time=datetime.now(SYDNEY_TZ).replace(hour=5, minute=30, second=0, microsecond=0).timetz(),
+        time=dt_time(5, 30, 0, tzinfo=SYDNEY_TZ),
         name="morning_briefing",
     )
 
