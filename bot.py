@@ -507,6 +507,39 @@ async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Inline button callbacks
 # ---------------------------------------------------------------------------
 
+
+# ---------------------------------------------------------------------------
+# /sports
+# ---------------------------------------------------------------------------
+
+async def cmd_sports(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update):
+        return
+    topic = " ".join(context.args) if context.args else None
+
+    if topic:
+        query = f"{topic} scores results latest"
+        await update.message.reply_text(f"Pulling sports results for: {topic}...")
+    else:
+        query = "Australia sports results scores today NRL AFL cricket tennis"
+        await update.message.reply_text("Pulling the latest sports results...")
+
+    try:
+        results = await tavily_news(query, max_results=7)
+        answer = results.get("answer", "")
+        articles = results.get("results", [])[:5]
+        article_text = " ".join([f"{a.get('title', '')}: {a.get('content', '')[:200]}" for a in articles])
+        prompt = (
+            f"Give Dan a sharp sports update in your Mason Drake voice. "
+            f"Deliver the key results, scores, and any standout moments. "
+            f"Keep it punchy — 4 to 6 sentences, spoken delivery. "
+            f"Sports data: {answer} {article_text}"
+        )
+        reply = await ask_claude(update.effective_user.id, prompt)
+        await reply_smart(update, reply)
+    except Exception as e:
+        logger.error(f"Sports error: {e}")
+        await update.message.reply_text(f"Couldn't fetch sports results: {e}")
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -557,6 +590,10 @@ async def handle_text_content(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif any(w in lower for w in ["news", "headlines", "briefing", "what's happening"]):
         context.args = []
         await cmd_news(update, context)
+    elif any(w in lower for w in ["sport", "sports", "score", "scores", "result", "results", "match", "game", "footy", "nrl", "afl", "cricket", "tennis", "soccer", "football", "f1", "formula 1", "basketball", "rugby"]):
+        query_words = [w for w in text.split() if w.lower() not in ["what", "are", "the", "latest", "how", "did", "score", "result", "results", "scores"]]
+        context.args = query_words if query_words else []
+        await cmd_sports(update, context)
     else:
         reply = await ask_claude(update.effective_user.id, text)
         await reply_smart(update, reply)
@@ -591,6 +628,7 @@ def main():
     app.add_handler(CommandHandler("addcal", cmd_addcal))
     app.add_handler(CommandHandler("search", cmd_search))
     app.add_handler(CommandHandler("news", cmd_news))
+    app.add_handler(CommandHandler("sports", cmd_sports))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
