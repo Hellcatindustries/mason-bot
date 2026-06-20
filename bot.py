@@ -329,6 +329,7 @@ async def morning_briefing(context) -> None:
             f"5. EDGE: One competitive or strategic insight Dan can act on today. "
             f"6. WORD OF THE DAY: Give Dan one powerful word — something that sharpens thinking, builds vocabulary, or carries real weight. State the word, its meaning, and use it in a sentence relevant to Hellcat or leadership. "
             f"7. ON THIS DAY: One remarkable thing that happened on {now_sydney.split(',')[0].split(' ')[1]} {now_sydney.split(',')[0].split(' ')[2]} in history — something worth knowing. Keep it sharp and relevant. "
+            f"8. QUOTE OF THE DAY: End with one powerful quote — from a leader, philosopher, warrior, or builder. Someone Dan would respect. Attribute it. Make it land. "
             f"Keep it punchy — voice delivery, 2 minutes max. No bullet points. Speak it. "
             f"AU news data: {au_answer} {au_text}. "
             f"World data: {world_answer} {world_text}. "
