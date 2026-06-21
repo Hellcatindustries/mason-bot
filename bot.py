@@ -202,13 +202,13 @@ async def ask_claude(user_id: int, user_msg: str, system_override: str = None) -
 
 async def text_to_speech(text: str) -> bytes:
         async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(
+            resp = await client.post(
             f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}",
             headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
             json={"text": text, "model_id": "eleven_turbo_v2", "voice_settings": {"stability": 0.5, "similarity_boost": 0.8}},
         )
-        resp.raise_for_status()
-        return resp.content
+            resp.raise_for_status()
+            return resp.content
 
 
 # ---------------------------------------------------------------------------
