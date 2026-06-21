@@ -201,7 +201,7 @@ async def ask_claude(user_id: int, user_msg: str, system_override: str = None) -
 # ---------------------------------------------------------------------------
 
 async def text_to_speech(text: str) -> bytes:
-    async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(
             f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}",
             headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
